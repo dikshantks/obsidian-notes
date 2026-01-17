@@ -1,5 +1,11 @@
-This is your new *vault*.
+# Data Engineering Notes Index
 
-Make a note of something, [[create a link]], or try [the Importer](https://help.obsidian.md/Plugins/Importer)!
-
-When you're ready, delete this note and make the vault your own.
+	
+1. **Overview & Prerequisites**
+	1. data products and data contracts 
+2. **Iceberg**
+3. **Kafka**
+    - 3.1 Kafka Connect
+4. **Trino**
+5. **Spark**
+6. **EMR**

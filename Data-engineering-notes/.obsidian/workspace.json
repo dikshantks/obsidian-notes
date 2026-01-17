@@ -4,37 +4,21 @@
     "type": "split",
     "children": [
       {
-        "id": "f726c0b0325ac856",
+        "id": "cd0d0b0752bff3d3",
         "type": "tabs",
         "children": [
           {
-            "id": "a54fa7a1c7beabe2",
+            "id": "8c16a3192f6bf517",
             "type": "leaf",
             "state": {
-              "type": "split-diff-view",
+              "type": "markdown",
               "state": {
-                "aFile": "Data-engineering-notes/Welcome.md",
-                "bFile": "Data-engineering-notes/Welcome.md",
-                "aRef": ""
+                "file": "Welcome.md",
+                "mode": "source",
+                "source": false
               },
-              "icon": "diff",
-              "title": "Diff: Welcome  (Working Tree)"
-            }
-          }
-        ]
-      },
-      {
-        "id": "ed3f4047ea2af8c9",
-        "type": "tabs",
-        "children": [
-          {
-            "id": "65f079b07133bbc2",
-            "type": "leaf",
-            "state": {
-              "type": "graph",
-              "state": {},
-              "icon": "lucide-git-fork",
-              "title": "Graph view"
+              "icon": "lucide-file",
+              "title": "Welcome"
             }
           }
         ]
@@ -110,6 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
+                "file": "Welcome.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -119,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks"
+              "title": "Backlinks for Welcome"
             }
           },
           {
@@ -128,11 +113,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
+                "file": "Welcome.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links"
+              "title": "Outgoing links from Welcome"
             }
           },
           {
@@ -170,12 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
+                "file": "Welcome.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline"
+              "title": "Outline of Welcome"
             }
           },
           {
@@ -207,7 +194,7 @@
       "obsidian-git:Open Git source control": false
     }
   },
-  "active": "d78e8bc9dc4d03f5",
+  "active": "8c16a3192f6bf517",
   "lastOpenFiles": [
     "Welcome.md"
   ]
