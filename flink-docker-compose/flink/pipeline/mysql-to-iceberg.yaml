@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Flink CDC 3.x Pipeline job: MySQL → Iceberg with automatic schema evolution.
+#
+# The pipeline connector requires ALL catalog settings to be prefixed with
+# "catalog.properties." — flat keys are rejected. catalog-name and
+# catalog-database are not options; the connector routes source tables as-is
+# (inventory.orders → Iceberg namespace "inventory", table "orders").
+#
+# NessieCatalog (catalog-impl) is used instead of the REST endpoint for
+# writes because Nessie's REST createTable NPEs on schemas with PRIMARY KEY.
+#
+# Submitted by flink-cdc-pipeline-submitter via submit-cdc-pipeline.sh.
+# ---------------------------------------------------------------------------
+
+source:
+  type: mysql
+  hostname: mysql
+  port: 3306
+  username: flinkcdc
+  password: flinkcdc
+  tables: inventory.orders
+  # server-id range must not overlap with any other Flink MySQL source.
+  server-id: 5500-5504
+  scan.startup.mode: initial
+
+sink:
+  type: iceberg
+  catalog.properties.catalog-impl: org.apache.iceberg.nessie.NessieCatalog
+  catalog.properties.io-impl: org.apache.iceberg.aws.s3.S3FileIO
+  catalog.properties.warehouse: s3://warehouse/
+  catalog.properties.uri: http://nessie:19120/api/v2
+  catalog.properties.ref: main
+  catalog.properties.s3.endpoint: http://minio:9000
+  catalog.properties.s3.path-style-access: "true"
+  catalog.properties.s3.access-key-id: minioadmin
+  catalog.properties.s3.secret-access-key: minioadmin
+  catalog.properties.client.region: us-east-1
+
+pipeline:
+  name: mysql-to-iceberg-cdc-pipeline
+  parallelism: 1
+  schema.change.behavior: evolve
+  # Iceberg sink commits data at every Flink checkpoint boundary.
+  # Without checkpointing enabled, no data is ever written to Iceberg.
+  execution.checkpointing.interval: 30 s

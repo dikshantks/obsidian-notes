@@ -1,0 +1,2 @@
+# Pure-Python MySQL client — no system libraries needed, works on amd64 & arm64.
+PyMySQL==1.1.1

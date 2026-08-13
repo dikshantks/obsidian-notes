@@ -1,0 +1,252 @@
+# ===========================================================================
+# End-to-end CDC lakehouse demo:
+#
+#   MySQL --(Flink CDC Pipeline)--> Apache Flink --(Iceberg sink)--> Nessie
+#                                                                      |
+#                                          data files in MinIO (S3)
+#                                                                      |
+#                                                             Trino (queries)
+#
+# The CDC pipeline uses a YAML definition (flink/pipeline/mysql-to-iceberg.yaml)
+# and supports automatic schema evolution — ALTER TABLE in MySQL is propagated
+# to the Iceberg table without a Flink restart.
+#
+# One command:  docker compose up -d --build
+# Then query:   docker compose exec trino trino --execute \
+#                 "SELECT count(*) FROM iceberg.db.orders"
+#
+# Credentials and versions live in .env.
+# ===========================================================================
+
+services:
+  # -------------------------------------------------------------------------
+  # MySQL 8 — the CDC source. Binlog is configured via mysql/conf.d/my.cnf and
+  # the schema/user are created by mysql/init/*.sql on first startup.
+  # -------------------------------------------------------------------------
+  mysql:
+    image: mysql:${MYSQL_VERSION}
+    container_name: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql/conf.d:/etc/mysql/conf.d:ro
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # MinIO — S3-compatible object store holding Iceberg data + metadata files.
+  # -------------------------------------------------------------------------
+  minio:
+    image: minio/minio:${MINIO_VERSION}
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # -------------------------------------------------------------------------
+  # One-shot: wait for MinIO, then create the warehouse bucket.
+  # -------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:${MC_VERSION}
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}; do
+        echo 'waiting for MinIO...'; sleep 2;
+      done;
+      mc mb --ignore-existing local/${WAREHOUSE_BUCKET};
+      echo 'bucket ${WAREHOUSE_BUCKET} ready';
+      "
+    restart: "no"
+
+  # -------------------------------------------------------------------------
+  # Project Nessie — the Iceberg catalog (no Hive Metastore). Serves an Iceberg
+  # REST endpoint at :19120/iceberg/ and vends the MinIO storage config.
+  # -------------------------------------------------------------------------
+  nessie:
+    image: ghcr.io/projectnessie/nessie:${NESSIE_VERSION}
+    container_name: nessie
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      JAVA_OPTS_APPEND: >-
+        -Dnessie.version.store.type=IN_MEMORY
+        -Dnessie.catalog.default-warehouse=warehouse
+        -Dnessie.catalog.warehouses.warehouse.location=s3://${WAREHOUSE_BUCKET}/
+        -Dnessie.catalog.service.s3.default-options.region=us-east-1
+        -Dnessie.catalog.service.s3.default-options.endpoint=http://minio:9000/
+        -Dnessie.catalog.service.s3.default-options.path-style-access=true
+        -Dnessie.catalog.service.s3.default-options.auth-type=STATIC
+        -Dnessie.catalog.service.s3.default-options.access-key=urn:nessie-secret:quarkus:s3-credentials
+        -Ds3-credentials.name=${MINIO_ROOT_USER}
+        -Ds3-credentials.secret=${MINIO_ROOT_PASSWORD}
+    ports:
+      - "19120:19120"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19120/api/v2/config"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  # -------------------------------------------------------------------------
+  # Flink JobManager — coordinates the cluster and hosts the web UI (:8081).
+  # Built from ./flink so the connector JARs are baked into the image.
+  # -------------------------------------------------------------------------
+  jobmanager:
+    build:
+      context: ./flink
+      args:
+        FLINK_VERSION: ${FLINK_VERSION}
+        ICEBERG_VERSION: ${ICEBERG_VERSION}
+        ICEBERG_FLINK_MINOR: ${ICEBERG_FLINK_MINOR}
+        FLINK_MINOR: ${FLINK_MINOR}
+        MYSQL_CDC_VERSION: ${MYSQL_CDC_VERSION}
+        MYSQL_DRIVER_VERSION: ${MYSQL_DRIVER_VERSION}
+        NESSIE_VERSION: ${NESSIE_VERSION}
+        FLINK_CDC_VERSION: ${FLINK_CDC_VERSION}
+    image: flink-cdc-iceberg:${FLINK_VERSION}
+    container_name: jobmanager
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        rest.address: jobmanager
+        rest.bind-address: 0.0.0.0
+        taskmanager.numberOfTaskSlots: 4
+        classloader.resolve-order: parent-first
+        execution.checkpointing.interval: 30 s
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/overview"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  # -------------------------------------------------------------------------
+  # Flink TaskManager — runs the actual CDC + Iceberg-write tasks. Same image.
+  # -------------------------------------------------------------------------
+  taskmanager:
+    image: flink-cdc-iceberg:${FLINK_VERSION}
+    container_name: taskmanager
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        classloader.resolve-order: parent-first
+    # scale with: docker compose up -d --scale taskmanager=2
+
+  # -------------------------------------------------------------------------
+  # One-shot: submit the MySQL→Iceberg CDC pipeline once the cluster, MySQL,
+  # and Nessie are all ready, then exit. The streaming job keeps running on
+  # the Flink cluster with schema.change.behavior=evolve.
+  # -------------------------------------------------------------------------
+  flink-cdc-pipeline-submitter:
+    image: flink-cdc-iceberg:${FLINK_VERSION}
+    container_name: flink-cdc-pipeline-submitter
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+      taskmanager:
+        condition: service_started
+      nessie:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      JOBMANAGER_HOST: jobmanager
+      JOBMANAGER_PORT: "8081"
+      PIPELINE_FILE: /opt/pipeline/mysql-to-iceberg.yaml
+      # rest.address/port are read by CliFrontend (via flink-cdc.sh) from
+      # FLINK_HOME/conf/config.yaml, which the Flink entrypoint writes from
+      # FLINK_PROPERTIES before our submission script runs.
+      # execution.checkpointing.interval must be in the SUBMITTER's config
+      # because it is applied when flink-cdc.sh creates the StreamGraph
+      # (not by the cluster at runtime). Without this the Iceberg sink never
+      # commits data (it only flushes on checkpoint boundaries).
+      FLINK_PROPERTIES: |
+        rest.address: jobmanager
+        rest.port: 8081
+        execution.checkpointing.interval: 30 s
+        classloader.resolve-order: parent-first
+    command: ["/opt/submit-cdc-pipeline.sh"]
+    restart: on-failure
+
+  # -------------------------------------------------------------------------
+  # Python order generator — one random write per second into MySQL. Mixes
+  # INSERT / UPDATE / DELETE by weight so all three CDC paths (upsert + delete)
+  # are exercised while the table still grows net-positive.
+  # -------------------------------------------------------------------------
+  generator:
+    build:
+      context: ./generator
+    image: cdc-order-generator:latest
+    container_name: generator
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      GENERATE_INTERVAL_SECONDS: "1.0"
+      # Relative frequency of each write. Set WEIGHT_DELETE=0 to never delete.
+      WEIGHT_INSERT: "6"
+      WEIGHT_UPDATE: "3"
+      WEIGHT_DELETE: "1"
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # Trino — query the Iceberg tables. Uses the image's built-in HEALTHCHECK.
+  # -------------------------------------------------------------------------
+  trino:
+    image: trinodb/trino:${TRINO_VERSION}
+    container_name: trino
+    depends_on:
+      nessie:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+
+volumes:
+  mysql-data:
+  minio-data:
